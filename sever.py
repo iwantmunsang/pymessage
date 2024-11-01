@@ -1,12 +1,42 @@
 import socket
 import json
 import threading
+import sys
+import hashlib
+import secrets
+
+# 랜덤 바이트 생성
+random_bytes = secrets.token_bytes(32)  # 32 바이트 랜덤 값 생성
+
+# SHA-256 해시 생성
+hash_value = hashlib.sha256(random_bytes).hexdigest()
+print("랜덤 해시 값:", hash_value)
 
 # 서버 주소와 포트 설정
-HOST = '192.168.0.12'  # 로컬 호스트 (자신의 컴퓨터 IP)
-PORT = 25565           # 사용할 포트
+data = 'setting.json'
+
+def read_json(file_path):
+    try:
+        with open(file_path, 'r', encoding='utf-8') as file:
+            return json.load(file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    
+setting = read_json(data)
+
+# 설정 파일에서 IP와 포트를 읽어옴
+print(f"{setting['ip']}")
+
+if not f"{setting['ip']}".count(".") == 3:
+    print("IP 형식이 정상적이지 않습니다.")
+    input()
+    sys.exit()
+
+HOST = setting["ip"]  # 로컬 호스트 (자신의 컴퓨터 IP)
+PORT = setting["port"]  # 사용할 포트
 
 clients = []  # 모든 클라이언트 연결을 저장하는 리스트
+addd = None   # 차단된 클라이언트의 주소 저장
 
 def handle_client(conn, addr):
     print(f"클라이언트 연결됨: {addr}")
@@ -29,7 +59,21 @@ def handle_client(conn, addr):
 
                     print(f"받은 JSON 데이터: {message}")
 
-                    # 모든 클라이언트에게 메시지 전송
+                    # 해시값 검증 후 메시지 브로드캐스트
+                    if message.get("hash_value") != hash_value:
+                        print(f"잘못된 해시 값을 가진 클라이언트 {addr} 연결을 종료합니다.")
+                        global addd
+                        addd = addr  # 차단된 클라이언트 주소 저장
+                        broadcast_message(message)
+                        conn.sendall(json.dumps({
+                            "status": "error",
+                            "message": "Invalid hash value. Disconnecting...",
+                            "color": "red"
+                        }).encode('utf-8'))
+                        conn.close()  # 연결 강제 종료
+                        break
+
+                    # 해시가 유효할 경우 메시지 브로드캐스트
                     broadcast_message(message)
 
             except ConnectionResetError:
@@ -42,12 +86,22 @@ def handle_client(conn, addr):
 
 def broadcast_message(message):
     # 응답을 JSON 형식으로 작성하여 모든 클라이언트에 전송
-    response = {
-        "status": "success",
-        "message": "Data received",
-        "MESSAGE_GET": message.get("message", "No message provided"),
-        "user_name": message.get("user_name", "ERROR")
-    }
+    if message.get("hash_value") == hash_value:
+        response = {
+            "status": "success",
+            "message": "Data received",
+            "MESSAGE_GET": message.get("message", "No message provided"),
+            "user_name": message.get("user_name", "ERROR"),
+            "color": "default"
+        }
+    else:
+        response = {
+            "status": "success",
+            "message": "Data received",
+            "MESSAGE_GET": f"잘못된 해시 값을 가진 클라이언트 {addd}의 연결을 차단 하였습니다.\n서버의 IP가 노출 되었을 수 있습니다.",
+            "user_name": "server",
+            "color": "red"
+        }
 
     # 모든 클라이언트에 메시지 전송
     for client in clients:
